@@ -5,8 +5,7 @@ import (
 	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
-	ws "github.com/gorilla/websocket"
-	"reflect"
+	"github.com/gorilla/websocket"
 	"strings"
 	"time"
 )
@@ -26,7 +25,27 @@ type MessageChannel struct {
 	ProductIds []string `json:"product_ids"`
 }
 
-func startSubscribe(wsConn *ws.Conn, message *Message) (*Message, error) {
+var TickerChan = make(chan string)
+
+var Db = getDb()
+
+func main() {
+	go startTicker([]string{"ETH-BTC"})
+	go startTicker([]string{"BTC-USD"})
+	go startTicker([]string{"BTC-EUR"})
+
+	for true {
+		message, opened := <-TickerChan
+
+		if !opened {
+			break
+		}
+
+		fmt.Println(message)
+	}
+}
+
+func startSubscribe(wsConn *websocket.Conn, message *Message) (*Message, error) {
 	var receivedMessage Message
 
 	if err := wsConn.WriteJSON(message); err != nil {
@@ -46,46 +65,8 @@ func startSubscribe(wsConn *ws.Conn, message *Message) (*Message, error) {
 	return &receivedMessage, nil
 }
 
-func Ensure(a interface{}) error {
-	field := reflect.Indirect(reflect.ValueOf(a))
-
-	switch field.Kind() {
-	case reflect.Slice:
-		if reflect.ValueOf(field.Interface()).Len() == 0 {
-			return fmt.Errorf(fmt.Sprintf("Slice is zero"))
-		}
-	default:
-		if reflect.Zero(field.Type()).Interface() == field.Interface() {
-			return fmt.Errorf(fmt.Sprintf("Property is zero"))
-		}
-	}
-
-	return nil
-}
-
-func EnsureProperties(a interface{}, properties []string) error {
-	valueOf := reflect.ValueOf(a)
-
-	for _, property := range properties {
-		field := reflect.Indirect(valueOf).FieldByName(property)
-
-		if err := Ensure(field.Interface()); err != nil {
-			return fmt.Errorf(fmt.Sprintf("%s: %s", err.Error(), property))
-		}
-	}
-
-	return nil
-}
-
-func NewTestWebsocketClient() (*ws.Conn, error) {
-	var wsDialer ws.Dialer
-	wsConn, _, err := wsDialer.Dial("wss://ws-feed-public.sandbox.pro.coinbase.com", nil)
-
-	return wsConn, err
-}
-
 func startTicker(productIds []string) {
-	wsConn, err := NewTestWebsocketClient()
+	wsConn, err := getWebsocketClient()
 
 	if err != nil {
 		panic(err)
@@ -103,6 +84,7 @@ func startTicker(productIds []string) {
 	}
 
 	message, err := startSubscribe(wsConn, &subscribe)
+
 	if err != nil {
 		panic(err)
 	}
@@ -111,27 +93,16 @@ func startTicker(productIds []string) {
 		panic(errors.New("Invalid message type: " + message.Type))
 	}
 
-	props := []string{"Type", "ProductID", "BestBid", "BestAsk"}
-	if err := EnsureProperties(message, props); err != nil {
-		panic(err)
-	}
-
-	db, err := sql.Open("mysql", "root:root@tcp(local_db:3306)/my_fx")
-
-	if err != nil {
-		panic(err)
-	}
-
 	for true {
 		message := Message{}
+
 		if err := wsConn.ReadJSON(&message); err != nil {
-			println(err.Error())
-			break
+			panic(err)
 		}
 
 		TickerChan <- message.Type + " " + message.ProductID + " " + message.BestBid + " " + message.BestAsk
 
-		_, err := db.Exec(
+		_, err = Db.Exec(
 			"INSERT INTO ticks (`timestamp`, symbol, bid, ask) VALUES (?, ?, ?, ?)",
 			time.Now().Unix(),
 			strings.Replace(message.ProductID, "-", "", 1),
@@ -144,20 +115,19 @@ func startTicker(productIds []string) {
 	}
 }
 
-var TickerChan = make(chan string)
+func getWebsocketClient() (*websocket.Conn, error) {
+	var wsDialer websocket.Dialer
+	wsConn, _, err := wsDialer.Dial("wss://ws-feed-public.sandbox.pro.coinbase.com", nil)
 
-func main() {
-	go startTicker([]string{"ETH-BTC"})
-	go startTicker([]string{"BTC-USD"})
-	go startTicker([]string{"BTC-EUR"})
+	return wsConn, err
+}
 
-	for true {
-		message, opened := <-TickerChan
+func getDb() *sql.DB {
+	db, err := sql.Open("mysql", "docker:docker@tcp(db:3306)/ticker")
 
-		if !opened {
-			break
-		}
-
-		fmt.Println(message)
+	if err != nil {
+		panic(err)
 	}
+
+	return db
 }
