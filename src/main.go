@@ -34,7 +34,7 @@ func main() {
 	go startTicker([]string{"BTC-USD"})
 	go startTicker([]string{"BTC-EUR"})
 
-	for true {
+	for {
 		message, opened := <-TickerChan
 
 		if !opened {
@@ -93,7 +93,7 @@ func startTicker(productIds []string) {
 		panic(errors.New("Invalid message type: " + message.Type))
 	}
 
-	for true {
+	for {
 		message := Message{}
 
 		if err := wsConn.ReadJSON(&message); err != nil {
@@ -104,7 +104,7 @@ func startTicker(productIds []string) {
 
 		_, err = Db.Exec(
 			"INSERT INTO ticks (`timestamp`, symbol, bid, ask) VALUES (?, ?, ?, ?)",
-			time.Now().Unix(),
+			time.Now().UnixNano()/(int64(time.Millisecond)/int64(time.Nanosecond)),
 			strings.Replace(message.ProductID, "-", "", 1),
 			message.BestBid,
 			message.BestAsk)
